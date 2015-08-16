@@ -1,0 +1,500 @@
+This code is (c) 2006 Michael A. Moore, Not to be republished or redistributed without written permission.
+
+
+; #########################################
+; # Globals and Things
+; #########################################
+; # (Defining the variables for the model.  
+;    There are more defined in the interface, though, as NetLogo 
+;    is not terribly consitent in its implementation. )
+
+
+turtles-own[
+PHZERO        ; The opinion of the turtle in respect to Event 1
+PHONE         ; The opinion of the turtle in respect to Event 2
+supervisor    ; Which turtle is the supervisor of this turtle
+party         ; Party affiliation
+distance-away ; How far away from the actual event
+history-x
+history-y
+]
+
+breeds[
+director      ; Primary Decision Maker
+manager       ; Two steps above "agent"
+analyst       ; One step above "agent"
+agent         ; Primary Gatherer
+drawer        ; Turtle used to draw lines
+target        ; Turtle used to show position
+]
+
+globals[
+clock         ; How Many Cycles Have Completed
+i             ; Counting Variable
+working       ; Internal Variable used within formulas
+working1      ; Internal Variable used within formulas
+working2      ; Internal Variable used within formulas
+field         ; List of integers from -10 to 10
+parties       ; List of parties
+eq-list       ; List to track Equilibrium Formation (distance from actual event)
+eq-list-x     ; List to track Equilibrium Formation (x-coordinate)
+eq-list-y     ; List to track Equilibrium Formation (y-coordinate)
+eq-list-moved ;
+eq-list-moved-tmp ; temporary variable
+stopnow       ; Set to "1" when equilibrium is reached
+]
+
+; #############################################################################
+; #############################   MAIN METHOD   ###############################
+; -----------------------------------------------------------------------------
+;            Main method used in the model.
+
+to MAIN
+  if (stopnow != 1) [ set clock clock + 1 ]
+  if (algo = "Nonlearning") [CREATE_AGENT_OPINIONS]
+  if (algo = "Learning") [CREATE_AGENT_OPINIONS_LEARNING]
+  INFER
+  REMEMBER_POSITIONS
+  ANALYZE
+  if (stopnow = 1) [ 
+    SHOW-EQUILIBRIUM
+    stop
+  ]
+  UPDATE_PLOT
+end
+
+
+
+; #############################################################################
+; ##########################   PRIMARY METHODS   ##############################
+; -----------------------------------------------------------------------------
+;            Main methods used in the model.  These methods are called 
+;                       directly by the user or by MAIN
+
+; #########################################
+; # SETUP
+; #########################################
+; # (This sets up the model.)
+
+to SETUP
+  ca ; (Clear All)
+  
+  ask patch 3 0 [
+    set plabel-color red
+    set plabel "PLEASE WAIT, SETTING UP MODEL."
+  ]
+  
+  ;Create Parties and Field
+  set parties ["redteam" "blueteam"]
+  set field [-10 -9 -8 -7 -6 -5 -4 -3 -2 -1 0 1 2 3 4 5 6 7 8 9 10]
+  
+  ;Set Axis Labels
+  ask patch 0 -11 [set plabel "Event 1"]
+  ask patch -9 -11 [ set plabel "-" ]
+  ask patch 9 -11 [set plabel "+" ]
+  ask patch -12 -0 [set plabel "Event 2"]
+  ask patch -12 -9 [ set plabel "-" ]
+  ask patch -12 9 [set plabel "+" ]
+  
+  ;Set Boundaries
+  ask patches with [pxcor < -10] [set pcolor 131]
+  ask patches with [pxcor > 10] [set pcolor 131]
+  ask patches with [pycor < -10] [set pcolor 131]
+  ask patches with [pycor > 10] [set pcolor 131]  
+  
+  ;Breed Supervisor
+  ask patch 0 0 [sprout 1 [set breed director set supervisor self]]
+  
+  ;Hatch Managers, set supervisor to the director
+  ask director [  
+    hatch-manager agent-count [set supervisor myself set heading random 360 fd -4 face supervisor] ;need at least one
+    hatch-manager random-normal 2 1 [set supervisor myself set heading random 360 fd -4 face supervisor]
+    set party random-one-of parties
+  ]
+    
+  ;Hatch Analysts, set supervisor to the creating manager
+  ask manager [ 
+    hatch-analyst agent-count * 2 [set supervisor myself set heading random 360 fd -4 face supervisor] ;need at least one
+    hatch-analyst random-normal 3 1 [set supervisor myself set heading random 360 fd -4 face supervisor]
+    set party random-one-of parties
+  ]
+    
+  ;Hatch Agents, set supervisor to the creating analyst
+  ask analyst [ 
+    hatch-agent agent-count  * 1 [set supervisor myself set heading random 360 fd -4 face supervisor set party "redteam"] ;need at least one
+    hatch-agent agent-count * party-ratio [set supervisor myself set heading random 360 fd -4 face supervisor set party "blueteam"]
+    ;hatch-agent random-normal 4 1 [set supervisor myself set heading random 360 fd -4 face supervisor]
+    set party random-one-of parties
+  ]
+  
+  ;Set up shapes and colors
+  ask director [ set color yellow set size 2 ]
+  ask manager [ set color lime set size 1]
+  ask analyst [ set color pink set size 1]
+  ask agent [set color brown set size 1]
+  
+  ;Set management party composition
+  if (upper-management-status = "all blue team") [ask director [ set party "blueteam"] ask manager [ set party "blueteam" ] ]
+  if (upper-management-status = "all red team") [ask director [ set party "redteam"] ask manager [set party "redteam"] ]
+  
+  ;Show parties
+  ask turtles with [party = "blueteam"] [set shape "Blue Team"]
+  ask turtles with [party = "redteam"] [set shape "Red Team"]
+  
+  ;Move turtles to where they belong (show their opinions) and show their linkages
+  ask turtles [
+    ;set PHZERO (random-one-of field)
+    ;set PHONE (random-one-of field)
+
+    initial-orient
+    
+    set xcor (PHZERO)
+    set ycor (PHONE)
+    
+    set history-x (list xcor)
+    set history-y (list ycor)
+    
+    linedraw
+  ]
+
+  ask patch 3 0 [
+    set plabel no-label
+  ]
+  
+
+  cd
+  
+  ask turtle 0 [
+    set distance-away distancexy-nowrap H1 H2
+    set eq-list (list distance-away)
+    
+    set eq-list-x (list xcor)
+    set eq-list-y (list ycor)
+    
+    set eq-list-moved (list 0)
+    
+    ]
+
+  ;Show counter labels
+  ask patch 6 12 [
+    set plabel-color grey
+    set plabel "Red Team Agent Count: " + (count agent with [party = "redteam"]) + "       " + "Blue Team Agent Count: " + (count agent with [party = "blueteam"]) 
+    ]
+  
+end
+
+
+
+;This method draws a line between a turtle and their supervisor
+to linedraw
+  if ( animation = true ) [
+  hatch-drawer 1 [face-nowrap supervisor-of myself set color color-of myself pd fd distancexy-nowrap (xcor-of supervisor) (ycor-of supervisor) die]
+  wait .5
+  hatch-drawer 1 [face-nowrap supervisor-of myself set color black pd fd distancexy-nowrap (xcor-of supervisor) (ycor-of supervisor) die]
+  ]
+end
+
+; #########################################
+; # CREATE_AGENT_OPINIONS 
+; #########################################
+; # (This is the function to simply reorient the agents based on a random-normal distribution.)
+
+;This method generates the ppinions of the agents
+to CREATE_AGENT_OPINIONS
+  ask agent [
+    set-randomized-opinion
+    reorient-based-on-party
+    if (rounding = true) [ ROUND-CLARIFY ] ; Round if nescessary
+    check-for-errors
+    move-to-new-location
+  ]
+  show-event-location
+end
+
+; #########################################
+; # CREATE_AGENT_OPINIONS_LEARNING
+; #########################################
+; # (This is the function to  reorient the agents based on a random-normal distribution, averaged with their last position.)
+
+to CREATE_AGENT_OPINIONS_LEARNING
+  ask agent [
+    set-randomized-opinion
+    reorient-based-on-party
+    if (rounding = true) [ ROUND-CLARIFY ] ; Round if nescessary
+
+    ;learning!!
+    set PHZERO (last history-x + PHZERO) / 2
+    set PHONE (last history-y + PHONE) / 2
+
+    check-for-errors
+    move-to-new-location
+  ]
+  show-event-location
+end
+
+; #########################################
+; # INFER
+; #########################################
+; # (This method calculates new PHONE and PHZERO values for managment based on the subordinate values.)
+
+to INFER
+  ;Show agent connections
+  ask agent[
+  linedraw
+  ]
+  
+  ;Recalculate Analyst Opinions
+  ask analyst [ 
+    ;set PHZERO mean values-from random-n-of (count turtles with [supervisor = myself or self = myself and party = party-of myself]) turtles with [supervisor = myself or self = myself and party = party-of myself] [PHZERO]
+    set PHZERO mean values-from turtles with [supervisor = myself or self = myself] [PHZERO]
+    set PHONE mean values-from turtles with [supervisor = myself or self = myself] [PHONE]
+    set PHZERO mean values-from turtles with [(supervisor = myself and party = party-of myself) or self = myself] [PHZERO]    
+    set PHONE mean values-from turtles with [(supervisor = myself and party = party-of myself) or self = myself] [PHONE]
+      if (rounding = true) [ ROUND-CLARIFY ]
+    MOVE ;Move to new locale
+    linedraw ;Show connection to supervisor
+  ]
+  
+  ;Recalculate Mangaer Opinions
+  ask manager [ 
+    set PHZERO mean values-from turtles with [supervisor = myself or self = myself] [PHZERO]
+    set PHONE mean values-from turtles with [supervisor = myself or self = myself] [PHONE]
+    set PHZERO mean values-from turtles with [(supervisor = myself and party = party-of myself) or self = myself] [PHZERO]    
+    set PHONE mean values-from turtles with [(supervisor = myself and party = party-of myself) or self = myself] [PHONE]
+    if (rounding = true) [ ROUND-CLARIFY ]
+    MOVE ;Move to new locale
+    linedraw ;Show connection to supervisor
+  ]
+  
+  ;Recalculate Director Opinion
+  ask director [ 
+    set PHZERO mean values-from turtles with [supervisor = myself or self = myself] [PHZERO]
+    set PHONE mean values-from turtles with [supervisor = myself or self = myself] [PHONE]
+    set PHZERO mean values-from turtles with [(supervisor = myself and party = party-of myself) or self = myself] [PHZERO]    
+    set PHONE mean values-from turtles with [(supervisor = myself and party = party-of myself) or self = myself] [PHONE]
+    if (rounding = true) [ ROUND-CLARIFY ]
+    MOVE ;Move to new Locale
+  ]
+  cd ;Clear all the lines
+end
+
+; #########################################
+; # MOVE
+; #########################################
+; # (This method moves the turtle to the new opinion.)
+
+to MOVE
+  if (PHZERO <= -10) [ set PHZERO -10 ] 
+  if (PHONE <= -10) [ set PHONE -10 ]
+  if (PHZERO >= 10) [set PHZERO 10]
+  if (PHONE >= 10) [set PHONE 10]
+  set xcor (PHZERO)
+  set ycor (PHONE)
+  set distance-away distancexy-nowrap H1 H2
+  SHOW-LOCATION
+end
+
+; #########################################
+; # ANALYZE
+; #########################################
+; # (This method checks to see if a director equilibrium has formed.)
+
+to ANALYZE
+  ask turtle 0 [
+    set distance-away distancexy-nowrap H1 H2
+    set eq-list lput distance-away eq-list
+    set eq-list-moved lput ( distancexy-nowrap (last eq-list-x) (last eq-list-y) ) eq-list-moved
+    
+    set eq-list-x lput xcor eq-list-x
+    set eq-list-y lput ycor eq-list-y
+    ]
+    
+   set eq-list-moved-tmp 0
+   if (clock >= 10) [
+      foreach sublist eq-list-moved (length eq-list-moved - 10) (length eq-list-moved) [ set eq-list-moved-tmp eq-list-moved-tmp + ? ]
+      if ((eq-list-moved-tmp / 10) <= eq-threshold) [set stopnow 1]
+   ]
+    
+   end
+   
+
+; #########################################
+; # UPDATE_PLOT
+; #########################################
+; # (This method updates the plots.)
+
+;Updates Graph
+to UPDATE_PLOT
+set-current-plot "Average Distance to Actual Event"
+set-current-plot-pen "Director"
+;plot PHONE-of turtle 0
+;set-current-plot-pen "H0"
+ask turtle 0 [plot distancexy-nowrap H1 H2]
+set-current-plot-pen "Manager"
+plot mean (values-from manager [distance-away])
+set-current-plot-pen "Analyst"
+plot mean (values-from analyst [distance-away])
+set-current-plot-pen "Agent"
+plot mean (values-from agent [distance-away])
+set-current-plot-pen "System Average"
+plot mean (values-from turtles [distance-away])
+
+set-current-plot "Equilibrium Gauge"
+plot eq-list-moved-tmp / 10
+
+end
+
+;Rounds, if nescessary.
+to ROUND-CLARIFY
+    set PHZERO round PHZERO
+    set PHONE round PHONE
+end
+
+to REMEMBER_POSITIONS
+  ask turtles[
+  set history-x lput xcor history-x
+  set history-y lput ycor history-y
+  ]
+end
+
+
+
+
+; #############################################################################
+; ##########################   SECONDARY METHODS  #############################
+; -----------------------------------------------------------------------------
+;            Methods used in earlier functions for doing small, 
+;                    repetitive (or iterative) tasks. 
+
+; #########################################
+; # MAIN Secondary Methods
+; #########################################
+
+to SHOW-EQUILIBRIUM
+ask patch 5 11 [
+    set plabel-color RED
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color Yellow
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color RED
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color Yellow
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color RED
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color Yellow
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color RED
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color Yellow
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color RED
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color Yellow
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color RED
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    set plabel-color Yellow
+    set plabel "*** Equilibrium reached after " + clock + " cycles ***" wait .1
+    
+    ]
+end
+
+; #########################################
+; # SETUP Secondary Methods
+; #########################################
+
+
+to initial-orient
+    set PHZERO precision (random-normal H1 reliability) 0 ; Random-Normal!
+   ; write who write " " print PHZERO
+    set PHONE precision (random-normal H2 reliability) 0 ; Random-Normal!
+   ; write who write " " print PHONE
+    
+    if ( ( (position PHZERO field) = false) or ( (position PHONE field) = false) ) [ initial-orient ]
+    
+end
+
+; #########################################
+; # CREATE_AGENT_OPINIONS Secondary Methods
+; #########################################
+
+
+to set-randomized-opinion
+  set PHZERO (random-normal H1 reliability) ; Random-Normal!
+  set PHONE (random-normal H2 reliability)  ; Random-Normal!
+end
+
+to reorient-based-on-party
+;If blueteam is wrong, set their opinion to the inverse.
+  if (parties-status = "blueteam is wrong") [
+    if (party = "blueteam") [
+      set PHZERO (random-normal (H1 * -1) reliability)
+      set PHONE (random-normal (H2 * -1) reliability)
+    ]
+  ]  
+  ;If redteam is wrong, set their opinion to the inverse.
+  if (parties-status = "redteam is wrong") [
+    if (party = "redteam") [
+      set PHZERO (random-normal (H1 * -1) reliability)
+      set PHONE (random-normal (H2 * -1) reliability)
+    ]
+  ]
+end
+
+
+to check-for-errors ;Error Checking
+  if (PHZERO <= -10) [ set PHZERO -10 ]
+  if (PHONE <= -10) [ set PHONE -10 ]
+  if (PHZERO >= 10) [set PHZERO 10]
+  if (PHONE >= 10) [set PHONE 10]
+end
+
+to move-to-new-location
+  ;Move to new positions
+  set xcor (PHZERO)
+  set ycor (PHONE)
+  set distance-away distancexy-nowrap H1 H2
+end
+
+
+to show-event-location
+  ;Show actual event position
+  ask patch (round H1) (round H2) [
+    set pcolor 67
+    sprout-target 1 [ set shape "Star" set size 4 set color 67]
+    if (animation = true) [ wait .7 ]
+    ask target [die]
+  ]
+end
+
+; #########################################
+; # MOVE Secondary Methods
+; #########################################
+
+;Shows the location of the turtle
+to SHOW-LOCATION
+  if (animation = true) [
+  hatch-target 1 [ set shape shape-of myself set size 1.25 set color color-of myself]
+  wait .03
+  ask target [ die ]
+  hatch-target 1 [ set shape shape-of myself set size 1.5 set color color-of myself]
+  wait .03
+  ask target [ die ]
+  hatch-target 1 [ set shape shape-of myself set size 1.75 set color color-of myself]
+  wait .03
+  ask target [ die ]
+  hatch-target 1 [ set shape shape-of myself set size 2 set color color-of myself]
+  wait .6
+  ask target [ die ]
+  hatch-target 1 [ set shape shape-of myself set size 1.75 set color color-of myself]
+  wait .03
+  ask target [ die ]
+  hatch-target 1 [ set shape shape-of myself set size 1.5 set color color-of myself]
+  wait .03
+  ask target [ die ]
+  hatch-target 1 [ set shape shape-of myself set size 1.25 set color color-of myself]
+  wait .03; 
+  ask target [ die ]
+  ]
+end
